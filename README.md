@@ -33,6 +33,15 @@ use a Hypothesis-backed sequence optimizer with native example shrinking via
 Reports can be emitted as JSON with `--json`, and API mode supports configured
 headers plus documented-response status checking for CI workflows.
 
+Direct exploration follows row insertions and deletions as well as field
+updates, so later actions can exercise newly created or missing entities.
+In both direct exploration and API-mode checking, row membership changes
+recheck all invariants, including those annotated
+with `reads`: inserts and deletes can change aggregate or join results without
+changing any surviving row's fields. Transition coverage continues to describe
+field changes on surviving rows; it does not count creation/deletion as enum
+transitions.
+
 ## Development
 
 ```bash

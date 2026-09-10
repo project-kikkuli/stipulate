@@ -405,7 +405,10 @@ class Explorer:
         result.transitions.extend(events)
         self._record_action_writes(result, action_name, events)
 
-        failures = self._checks(events=events, call=call, result=result)
+        failures = self._checks(
+            events=events, call=call, result=result,
+            membership_changed=before.keys() != after.keys(),
+        )
         if failures:
             for failure in failures:
                 self._record_violation(result, failure, steps)
@@ -413,7 +416,9 @@ class Explorer:
             _recover_session(self.db)
             return
 
-        if not events:
+        # Field transitions omit inserted/deleted rows, but those actions can
+        # enable further calls just as an update can.
+        if before == after:
             step.rollback()
             _recover_session(self.db)
             return
@@ -428,6 +433,7 @@ class Explorer:
         events: list[TransitionEvent],
         call: BoundCall,
         result: ExplorationResult | None = None,
+        membership_changed: bool = False,
     ) -> list[CheckFailure]:
         failures: list[CheckFailure] = []
         failures.extend(check_forbidden_transitions(events))
@@ -437,7 +443,9 @@ class Explorer:
             check_invariants(
                 self.db,
                 self.invariants,
-                events=events,
+                # A row appearing/disappearing can affect any aggregate or
+                # join, even when no surviving row's declared fields changed.
+                events=None if membership_changed else events,
                 exercised=result.invariant_coverage if result is not None else None,
             )
         )
@@ -625,7 +633,10 @@ class Explorer:
         if result is not None:
             result.transitions.extend(events)
             self._record_action_writes(result, step.call.action.name or "action", events)
-        failures = self._checks(events=events, call=step.call, result=result)
+        failures = self._checks(
+            events=events, call=step.call, result=result,
+            membership_changed=before.keys() != after.keys(),
+        )
         if failures:
             savepoint.rollback()
             _recover_session(self.db)
@@ -785,7 +796,10 @@ class Explorer:
 
         after = snapshot(self.db, self.models)
         events = diff_snapshots(before, after)
-        failures = self._checks(events=events, call=step.call)
+        failures = self._checks(
+            events=events, call=step.call,
+            membership_changed=before.keys() != after.keys(),
+        )
         if failures:
             savepoint.rollback()
             _recover_session(self.db)
