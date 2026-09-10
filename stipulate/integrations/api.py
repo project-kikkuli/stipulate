@@ -53,7 +53,8 @@ class ApiModeChecker:
             check_invariants(
                 self.db,
                 self.invariants,
-                events=events,
+                # Inserts/deletes can change aggregates without field transitions.
+                events=None if before.keys() != after.keys() else events,
                 exercised=result.invariant_coverage,
             )
         )

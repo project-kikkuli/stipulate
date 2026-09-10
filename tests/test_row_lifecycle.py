@@ -97,3 +97,59 @@ def test_membership_changes_recheck_read_annotated_invariants(db, optimizer, ope
 
     assert any(v.name == "exactly_one_item" for v in result.violations)
     assert result.invariant_coverage.get("exactly_one_item", 0) > 0
+
+
+@pytest.mark.parametrize("operation", [insert_item, delete_item])
+def test_api_checker_rechecks_read_annotated_invariants_after_membership_changes(db, operation):
+    from stipulate import create_api_checker
+
+    @invariant(reads=["LifecycleItem.id"])
+    def exactly_one_item(db: Session):
+        assert len(db.exec(select(LifecycleItem)).all()) == 1, "expected one item"
+
+    db.add(LifecycleItem(id=1))
+    db.commit()
+    checker = create_api_checker(models=[LifecycleItem], db=db, invariants=[exactly_one_item])
+    before = checker.before_call()
+    operation(db)
+    result = checker.after_call(before, sequence=("synthetic API mutation",))
+
+    assert any(v.name == "exactly_one_item" for v in result.violations)
+    assert result.invariant_coverage["exactly_one_item"] == 1
+    assert result.transitions == []  # Row membership is not a field transition.
+
+
+@pytest.mark.parametrize("operation", [insert_item, delete_item])
+def test_api_explorer_reports_membership_violation_after_http_request(operation):
+    fastapi = pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from sqlalchemy.pool import StaticPool
+    from stipulate import ApiExplorer
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine, tables=[LifecycleItem.__table__])
+    app = fastapi.FastAPI()
+
+    @app.post("/items/change")
+    def change_items():
+        with Session(engine) as request_db:
+            operation(request_db)
+        return {"changed": True}
+
+    @invariant(reads=["LifecycleItem.id"])
+    def exactly_one_item(db: Session):
+        assert len(db.exec(select(LifecycleItem)).all()) == 1, "expected one item"
+
+    try:
+        with Session(engine) as db, TestClient(app) as client:
+            result = ApiExplorer(
+                models=[LifecycleItem], db=db, app=app, client=client,
+                seeds=[initial_item], invariants=[exactly_one_item], budget=1,
+            ).run()
+        assert result.steps_executed == 1
+        assert result.api_status_coverage == {"POST /items/change": {200: 1}}
+        assert any(v.name == "exactly_one_item" for v in result.violations)
+        assert result.invariant_coverage["exactly_one_item"] == 1
+    finally:
+        engine.dispose()
